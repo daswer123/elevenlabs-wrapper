@@ -1,0 +1,28 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "elevenlabs-wrapper"
+version = "0.0.1"
+authors = [
+  { name = "daswer123", email = "daswerq123@gmail.com" }
+]
+description = "A simple wrapper for Elevenlabs TTS"
+readme = "README.md"
+requires-python = ">=3.9"
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: OS Independent"
+]
+dependencies = [
+  "elevenlabs",
+  "python-dotenv"
+]
+[project.urls]
+Homepage = "https://github.com/daswer123/sonic_tts_api_wrapper"
+"Bug Tracker" = "https://github.com/daswer123/sonic_tts_api_wrapper/issues"
+
+[tool.hatch.build.targets.wheel]
+only-include = ["elevenlabs_wrapper"]
