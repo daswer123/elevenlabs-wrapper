@@ -14,10 +14,10 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 class ElevenLabsManager:
-    def __init__(self, api_key: str, default_model: str = "eleven_turbo_v2_5"):
+    def __init__(self, api_key: str, default_model: str = "eleven_turbo_v2_5",base_url : str = "https://api.elevenlabs.io/v1"):
         logger.info("Initializing ElevenLabsManager...")
         try:
-            self.client = ElevenLabs(api_key=api_key)
+            self.client = ElevenLabs(api_key=api_key,base_url=base_url)
             logger.info("Successfully connected to ElevenLabs API")
         except Exception as e:
             logger.error(f"Failed to initialize ElevenLabs client: {str(e)}")
