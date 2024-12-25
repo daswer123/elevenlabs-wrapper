@@ -21,22 +21,15 @@ class ElevenLabsManager:
         base_url: str = "https://api.elevenlabs.io/v1"
     ):
         logger.info("Initializing ElevenLabsManager...")
-        try:
-            self.client = ElevenLabs(api_key=api_key, base_url=base_url)
-            logger.info("Successfully connected to ElevenLabs API")
-        except Exception as e:
-            logger.error(f"Failed to initialize ElevenLabs client: {str(e)}")
-            raise
-
         self.api_key = api_key
         self.base_url = base_url
-
         self.default_model = default_model
-        self._voices_cache = None
-        self.stability = 0.5
-        self.similarity_boost = 0.75
-
-        # Можно хранить итоговую информацию о подписке здесь
+        
+        # Флаги доступности
+        self._is_available = False
+        self._can_generate = False
+        
+        # Итоговая информация о подписке
         self._subscription_info = {
             "total_symbols": None,
             "used_symbols": None,
@@ -44,13 +37,102 @@ class ElevenLabsManager:
             "can_generate": None
         }
 
-        # Здесь будем хранить причину недоступности (если что-то пошло не так)
+        # Причина недоступности
         self._unavailability_reason = ""
 
+        # Настройки генерации
+        self._voices_cache = None
+        self.stability = 0.5
+        self.similarity_boost = 0.75
+
+        # Инициализация ElevenLabs клиентом
+        try:
+            self.client = ElevenLabs(api_key=self.api_key, base_url=self.base_url)
+            logger.info("Successfully connected to ElevenLabs API")
+        except Exception as e:
+            logger.error(f"Failed to initialize ElevenLabs client: {str(e)}")
+            raise
+        
         logger.info(f"Initialized with default model: {default_model}")
         logger.info(f"Initial stability: {self.stability}")
         logger.info(f"Initial similarity boost: {self.similarity_boost}")
 
+        # После инициализации сразу проверим здоровье
+        self.check_api_health_update_flags()
+
+    # -------------------------------------------------------------------------
+    # Методы для установки новых значений ключа и URL
+    # -------------------------------------------------------------------------
+    def set_api_key(self, new_api_key: str):
+        """
+        Устанавливает новый API-ключ и переинициализирует клиент,
+        а затем заново проверяет доступность API и обновляет внутренние флаги.
+        """
+        logger.info(f"Setting a new API key: {new_api_key}")
+        self.api_key = new_api_key
+        self._voices_cache = None  # сбрасываем кэш, если был
+
+        try:
+            self.client = ElevenLabs(api_key=self.api_key, base_url=self.base_url)
+            logger.info("Client re-initialized with the new API key.")
+        except Exception as e:
+            logger.error(f"Failed to re-initialize client with new API key: {str(e)}")
+            raise
+
+        # Проверим здоровье
+        self.check_api_health_update_flags()
+
+    def set_base_url(self, new_base_url: str):
+        """
+        Устанавливает новый base_url и переинициализирует клиент,
+        а затем заново проверяет доступность API и обновляет внутренние флаги.
+        """
+        logger.info(f"Setting a new base_url: {new_base_url}")
+        self.base_url = new_base_url
+        self._voices_cache = None  # сбрасываем кэш, если был
+
+        try:
+            self.client = ElevenLabs(api_key=self.api_key, base_url=self.base_url)
+            logger.info("Client re-initialized with the new base_url.")
+        except Exception as e:
+            logger.error(f"Failed to re-initialize client with new base_url: {str(e)}")
+            raise
+
+        # Проверим здоровье
+        self.check_api_health_update_flags()
+
+    # -------------------------------------------------------------------------
+    # Внутренний метод для обновления внутренних флагов по результатам check_api_health
+    # -------------------------------------------------------------------------
+    def check_api_health_update_flags(self):
+        """
+        Вызывает check_api_health(), обновляет _is_available, _can_generate,
+        а также _unavailability_reason в случае проблем.
+        """
+        health = self.check_api_health()
+        self._is_available = health["api_available"]
+        self._can_generate = health["subscription"]["can_generate"]
+        self._unavailability_reason = health["reason"]
+
+        logger.info(
+            f"Updated internal flags: _is_available={self._is_available}, "
+            f"_can_generate={self._can_generate}, reason='{self._unavailability_reason}'"
+        )
+
+    # =========================================================================
+    # Стандартные "геттеры" для _is_available и _can_generate, если нужно
+    # =========================================================================
+    @property
+    def is_available(self):
+        return self._is_available
+
+    @property
+    def can_generate(self):
+        return self._can_generate
+
+    # -------------------------------------------------------------------------
+    # Методы управления параметрами TTS
+    # -------------------------------------------------------------------------
     def set_model(self, model_name: str):
         """Set the default model for generation."""
         logger.info(f"Changing model from {self.default_model} to {model_name}")
@@ -73,6 +155,9 @@ class ElevenLabsManager:
         logger.info(f"Changing similarity boost from {self.similarity_boost} to {value}")
         self.similarity_boost = value
 
+    # -------------------------------------------------------------------------
+    # Работа с голосами
+    # -------------------------------------------------------------------------
     def _fetch_voices(self):
         """Internal method to fetch and cache voices."""
         logger.info("Fetching available voices from API...")
@@ -116,6 +201,9 @@ class ElevenLabsManager:
             logger.error(f"Error while filtering voices: {str(e)}")
             raise
 
+    # -------------------------------------------------------------------------
+    # Обработка файлов (сплит)
+    # -------------------------------------------------------------------------
     def split_files_if_needed(self, file_paths: List[str], max_size_mb: float = 10.0) -> List[str]:
         """
         Checks the size of files and splits them if they exceed max_size_mb.
@@ -177,7 +265,10 @@ class ElevenLabsManager:
             logger.debug(f"Final file {f} size: {size/1024/1024:.2f}MB")
 
         return final_files
-    
+
+    # -------------------------------------------------------------------------
+    # Удаление, клонирование голосов
+    # -------------------------------------------------------------------------
     def delete_voice(self, voice_id: str) -> bool:
         """
         Delete a cloned voice by its ID.
@@ -191,7 +282,6 @@ class ElevenLabsManager:
         logger.info(f"Attempting to delete voice with ID: {voice_id}")
 
         try:
-            # First check if voice exists and is cloned
             voices = self._fetch_voices()
             voice_exists = False
             is_cloned = False
@@ -213,8 +303,6 @@ class ElevenLabsManager:
 
             logger.info(f"Deleting cloned voice: {voice_name} (ID: {voice_id})")
             self.client.voices.delete(voice_id)
-
-            # Reset cache to reflect changes
             self._voices_cache = None
             logger.info(f"Successfully deleted voice {voice_name} (ID: {voice_id})")
             return True
@@ -224,7 +312,9 @@ class ElevenLabsManager:
             raise
 
     def clone_voice(self, name: str, files: List[str], description: Optional[str] = None) -> str:
-        """Clone a voice from audio files."""
+        """
+        Clone a voice from audio files.
+        """
         logger.info(f"Starting voice cloning process for '{name}'")
         logger.info(f"Input files: {files}")
     
@@ -246,6 +336,9 @@ class ElevenLabsManager:
             logger.error(f"Voice cloning failed: {str(e)}")
             raise
 
+    # -------------------------------------------------------------------------
+    # Генерация и сохранение аудио
+    # -------------------------------------------------------------------------
     def generate_audio(self, text: str, voice: Optional[str] = None, model: Optional[str] = None, **kwargs):
         """Generate audio from text."""
         logger.info("Starting audio generation...")
@@ -291,15 +384,12 @@ class ElevenLabsManager:
             logger.error(f"Failed to save audio file: {str(e)}")
             raise
 
+    # -------------------------------------------------------------------------
+    # Поиск голоса
+    # -------------------------------------------------------------------------
     def find_voice_by_name(self, voice_name: str) -> Optional[str]:
         """
         Find a voice_id by its name. Returns None if not found.
-
-        Args:
-            voice_name (str): The name of the voice to search for
-
-        Returns:
-            Optional[str]: The voice_id if found, None otherwise
         """
         logger.info(f"Searching for voice with name: '{voice_name}'")
 
@@ -319,10 +409,9 @@ class ElevenLabsManager:
             logger.error(f"Error while searching for voice: {str(e)}")
             raise
 
-    # =========================================================================
-    # Новые методы для проверки доступности API и состояния подписки
-    # =========================================================================
-
+    # -------------------------------------------------------------------------
+    # Проверка доступности API и состояния подписки
+    # -------------------------------------------------------------------------
     def check_api_availability(self) -> bool:
         """
         Проверяем, что API-ключ рабочий, пытаясь получить список голосов.
@@ -364,19 +453,17 @@ class ElevenLabsManager:
 
         try:
             response = requests.get(subscription_url, headers=headers)
-            print(response.json())
+            logger.debug(f"Subscription response JSON: {response.json()}")
             if response.status_code != 200:
                 logger.warning(f"Failed to fetch subscription info. Status code: {response.status_code}")
                 response.raise_for_status()
 
             data = response.json()
 
-            # Предполагаем, что в ответе есть поля allowed_characters и character_count
-            # Если у вас платный тариф, названия могут отличаться
+            # Предполагаем, что в ответе есть эти поля:
             total_symbols = data.get("character_limit", 0)
             used_symbols = data.get("character_count", 0)
             remain_symbols = total_symbols - used_symbols
-
             can_generate = (remain_symbols > 0)
 
             self._subscription_info = {
@@ -440,6 +527,7 @@ class ElevenLabsManager:
             sub_info = self.check_subscription_info()
             result["api_available"] = True
             result["subscription"] = sub_info
+
             # Если can_generate=False, значит лимит символов исчерпан
             if not sub_info["can_generate"]:
                 result["reason"] = "No symbols left for generation."
@@ -454,32 +542,32 @@ class ElevenLabsManager:
         return result
 
 
-
-
+# -----------------------------------------------------------------------------
+# Пример использования
+# -----------------------------------------------------------------------------
 if __name__ == "__main__":
     try:
         api_key = "-"
-        manager = ElevenLabsManager(api_key=api_key,base_url="https://api.elevenlabs.io")
+        manager = ElevenLabsManager(api_key=api_key, base_url="https://api.elevenlabs.io")
 
-        # Общая проверка API
+        # Посмотрим, что у нас в health
         health = manager.check_api_health()
         print("API Health:", health)
-        # Пример вывода:
-        # {
-        #   'api_available': True,
-        #   'reason': 'All good. You can generate audio.',
-        #   'subscription': {
-        #       'total_symbols': 1000000,
-        #       'used_symbols': 12345,
-        #       'remain_symbols': 987655,
-        #       'can_generate': True
-        #   }
-        # }
+        print("Is available?", manager.is_available)
+        print("Can generate?", manager.can_generate)
 
-        # Если всё хорошо, можно генерировать
-        if health["api_available"] and health["subscription"]["can_generate"]:
-            audio_data = manager.generate_audio("Hello from new method checking!")
-            manager.save_audio(audio_data, "hello_new_methods.mp3")
+        # Попробуем сменить API-ключ (фиктивный пример):
+        manager.set_api_key("NEW_KEY_123")
+        # И посмотрим заново, что вернёт:
+        print("After setting new API key:", manager.check_api_health())
+        print("Is available?", manager.is_available)
+        print("Can generate?", manager.can_generate)
+
+        # Сменим base_url (опять же условно, если бы работали с иным URL)
+        manager.set_base_url("https://api.elevenlabs.io/v1")
+        print("After setting new base url:", manager.check_api_health())
+        print("Is available?", manager.is_available)
+        print("Can generate?", manager.can_generate)
 
     except Exception as e:
         logger.error(f"Application error: {str(e)}")
