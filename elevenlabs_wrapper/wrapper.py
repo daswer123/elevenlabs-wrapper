@@ -130,6 +130,10 @@ class ElevenLabsManager:
     def can_generate(self):
         return self._can_generate
 
+    @property
+    def subscription_info(self):
+        return self._subscription_info
+
     # -------------------------------------------------------------------------
     # Методы управления параметрами TTS
     # -------------------------------------------------------------------------
