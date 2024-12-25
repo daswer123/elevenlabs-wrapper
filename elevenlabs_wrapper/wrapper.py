@@ -79,8 +79,9 @@ class ElevenLabsManager:
             logger.error(f"Failed to re-initialize client with new API key: {str(e)}")
             raise
 
-        # Проверим здоровье
-        self.check_api_health_update_flags()
+        # Проверим здоровье только если это не часть совместной установки
+        if not hasattr(self, '_skip_health_check'):
+            self.check_api_health_update_flags()
 
     def set_base_url(self, new_base_url: str):
         """
@@ -98,8 +99,22 @@ class ElevenLabsManager:
             logger.error(f"Failed to re-initialize client with new base_url: {str(e)}")
             raise
 
-        # Проверим здоровье
-        self.check_api_health_update_flags()
+        # Проверим здоровье только если это не часть совместной установки
+        if not hasattr(self, '_skip_health_check'):
+            self.check_api_health_update_flags()
+    
+    def set_api_and_base_url(self, api_key: str, base_url: str):
+        # Устанавливаем флаг для пропуска промежуточных проверок
+        self._skip_health_check = True
+        
+        try:
+            self.set_api_key(api_key)
+            self.set_base_url(base_url)
+            # Делаем одну финальную проверку
+            self.check_api_health_update_flags()
+        finally:
+            # Удаляем флаг в любом случае
+            delattr(self, '_skip_health_check')
 
     # -------------------------------------------------------------------------
     # Внутренний метод для обновления внутренних флагов по результатам check_api_health
@@ -129,7 +144,7 @@ class ElevenLabsManager:
     @property
     def can_generate(self):
         return self._can_generate
-
+    
     @property
     def subscription_info(self):
         return self._subscription_info
