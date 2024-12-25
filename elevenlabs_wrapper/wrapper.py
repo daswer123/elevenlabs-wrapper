@@ -2,11 +2,11 @@ import os
 import math
 import json
 import logging
+import requests
 from typing import List, Optional
 from elevenlabs.client import ElevenLabs
 from elevenlabs import save
 
-# Настройка логирования
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
@@ -14,19 +14,39 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 class ElevenLabsManager:
-    def __init__(self, api_key: str, default_model: str = "eleven_turbo_v2_5",base_url : str = "https://api.elevenlabs.io/v1"):
+    def __init__(
+        self,
+        api_key: str,
+        default_model: str = "eleven_turbo_v2_5",
+        base_url: str = "https://api.elevenlabs.io/v1"
+    ):
         logger.info("Initializing ElevenLabsManager...")
         try:
-            self.client = ElevenLabs(api_key=api_key,base_url=base_url)
+            self.client = ElevenLabs(api_key=api_key, base_url=base_url)
             logger.info("Successfully connected to ElevenLabs API")
         except Exception as e:
             logger.error(f"Failed to initialize ElevenLabs client: {str(e)}")
             raise
 
+        self.api_key = api_key
+        self.base_url = base_url
+
         self.default_model = default_model
         self._voices_cache = None
         self.stability = 0.5
         self.similarity_boost = 0.75
+
+        # Можно хранить итоговую информацию о подписке здесь
+        self._subscription_info = {
+            "total_symbols": None,
+            "used_symbols": None,
+            "remain_symbols": None,
+            "can_generate": None
+        }
+
+        # Здесь будем хранить причину недоступности (если что-то пошло не так)
+        self._unavailability_reason = ""
+
         logger.info(f"Initialized with default model: {default_model}")
         logger.info(f"Initial stability: {self.stability}")
         logger.info(f"Initial similarity boost: {self.similarity_boost}")
@@ -134,8 +154,10 @@ class ElevenLabsManager:
                                 outfile.write(part_data)
 
                             part_size = os.path.getsize(part_file)
-                            logger.info(f"Created part {i+1}/{parts_count}: {part_file} "
-                                      f"(size: {part_size/1024/1024:.2f}MB)")
+                            logger.info(
+                                f"Created part {i+1}/{parts_count}: {part_file} "
+                                f"(size: {part_size/1024/1024:.2f}MB)"
+                            )
                             final_files.append(part_file)
 
                     logger.info(f"Successfully split {fpath} into {parts_count} parts")
@@ -177,7 +199,7 @@ class ElevenLabsManager:
             for voice in voices:
                 if voice.voice_id == voice_id:
                     voice_exists = True
-                    is_cloned = voice.category == "cloned"
+                    is_cloned = (voice.category == "cloned")
                     voice_name = voice.name
                     break
                 
@@ -201,7 +223,6 @@ class ElevenLabsManager:
             logger.error(f"Failed to delete voice {voice_id}: {str(e)}")
             raise
 
-    
     def clone_voice(self, name: str, files: List[str], description: Optional[str] = None) -> str:
         """Clone a voice from audio files."""
         logger.info(f"Starting voice cloning process for '{name}'")
@@ -271,73 +292,194 @@ class ElevenLabsManager:
             raise
 
     def find_voice_by_name(self, voice_name: str) -> Optional[str]:
-            """
-            Find a voice_id by its name. Returns None if not found.
+        """
+        Find a voice_id by its name. Returns None if not found.
 
-            Args:
-                voice_name (str): The name of the voice to search for
+        Args:
+            voice_name (str): The name of the voice to search for
 
-            Returns:
-                Optional[str]: The voice_id if found, None otherwise
-            """
-            logger.info(f"Searching for voice with name: '{voice_name}'")
+        Returns:
+            Optional[str]: The voice_id if found, None otherwise
+        """
+        logger.info(f"Searching for voice with name: '{voice_name}'")
 
-            try:
-                voices = self._fetch_voices()
-                logger.debug(f"Searching through {len(voices)} available voices")
+        try:
+            voices = self._fetch_voices()
+            logger.debug(f"Searching through {len(voices)} available voices")
 
-                for voice in voices:
-                    if voice.name.lower() == voice_name.lower():
-                        logger.info(f"Voice found! Name: '{voice.name}', ID: {voice.voice_id}")
-                        return voice.voice_id
+            for voice in voices:
+                if voice.name.lower() == voice_name.lower():
+                    logger.info(f"Voice found! Name: '{voice.name}', ID: {voice.voice_id}")
+                    return voice.voice_id
 
-                logger.warning(f"No voice found with name '{voice_name}'")
-                return None
+            logger.warning(f"No voice found with name '{voice_name}'")
+            return None
 
-            except Exception as e:
-                logger.error(f"Error while searching for voice: {str(e)}")
-                raise
+        except Exception as e:
+            logger.error(f"Error while searching for voice: {str(e)}")
+            raise
+
+    # =========================================================================
+    # Новые методы для проверки доступности API и состояния подписки
+    # =========================================================================
+
+    def check_api_availability(self) -> bool:
+        """
+        Проверяем, что API-ключ рабочий, пытаясь получить список голосов.
+        Возвращает:
+            True, если ключ валиден (получили голоса без ошибок и список не пуст).
+            False в противном случае.
+        """
+        logger.info("Checking if ElevenLabs API is available with the provided API key...")
+        try:
+            voices = self.get_voices(filter_by="all")
+            if voices and len(voices) > 0:
+                logger.info("API key is valid, voices retrieved successfully.")
+                return True
+            else:
+                logger.warning("API key might be invalid or no voices returned.")
+                return False
+        except Exception as e:
+            logger.error(f"Error checking API availability: {e}")
+            return False
+
+    def check_subscription_info(self) -> dict:
+        """
+        Запрос информации о подписке через /v1/user/subscription.
+        Возвращает словарь со структурой:
+            {
+                "total_symbols": int,
+                "used_symbols": int,
+                "remain_symbols": int,
+                "can_generate": bool
+            }
+
+        В случае ошибки выбрасывает исключение или заполняет поля None.
+        """
+        logger.info("Checking subscription limits from ElevenLabs...")
+        subscription_url = f"{self.base_url}/v1/user/subscription"
+        headers = {
+            "xi-api-key": self.api_key
+        }
+
+        try:
+            response = requests.get(subscription_url, headers=headers)
+            print(response.json())
+            if response.status_code != 200:
+                logger.warning(f"Failed to fetch subscription info. Status code: {response.status_code}")
+                response.raise_for_status()
+
+            data = response.json()
+
+            # Предполагаем, что в ответе есть поля allowed_characters и character_count
+            # Если у вас платный тариф, названия могут отличаться
+            total_symbols = data.get("character_limit", 0)
+            used_symbols = data.get("character_count", 0)
+            remain_symbols = total_symbols - used_symbols
+
+            can_generate = (remain_symbols > 0)
+
+            self._subscription_info = {
+                "total_symbols": total_symbols,
+                "used_symbols": used_symbols,
+                "remain_symbols": max(remain_symbols, 0),
+                "can_generate": can_generate
+            }
+            logger.info(
+                f"Subscription info: "
+                f"total={total_symbols}, used={used_symbols}, remain={remain_symbols}, can_generate={can_generate}"
+            )
+            return self._subscription_info
+
+        except Exception as e:
+            logger.error(f"Error while checking subscription info: {e}")
+            raise
+
+    def check_api_health(self) -> dict:
+        """
+        Общая проверка работоспособности API.
+        1) Проверяет валидность API-ключа (check_api_availability).
+        2) Если ключ валиден, запрашивает информацию о лимитах (check_subscription_info).
+
+        Возвращает словарь формата:
+            {
+                "api_available": bool,
+                "reason": str,
+                "subscription": {
+                    "total_symbols": int/None,
+                    "used_symbols": int/None,
+                    "remain_symbols": int/None,
+                    "can_generate": bool/None
+                }
+            }
+        """
+        logger.info("Performing overall API health check...")
+
+        result = {
+            "api_available": False,
+            "reason": "",
+            "subscription": {
+                "total_symbols": None,
+                "used_symbols": None,
+                "remain_symbols": None,
+                "can_generate": None
+            }
+        }
+
+        # 1. Проверяем доступность API
+        api_ok = self.check_api_availability()
+        if not api_ok:
+            reason = "Invalid API key or cannot fetch voices."
+            logger.warning(reason)
+            result["api_available"] = False
+            result["reason"] = reason
+            return result
+
+        # 2. Если ключ валиден, проверяем лимиты
+        try:
+            sub_info = self.check_subscription_info()
+            result["api_available"] = True
+            result["subscription"] = sub_info
+            # Если can_generate=False, значит лимит символов исчерпан
+            if not sub_info["can_generate"]:
+                result["reason"] = "No symbols left for generation."
+            else:
+                result["reason"] = "All good. You can generate audio."
+        except Exception as e:
+            reason = f"Failed to get subscription info: {e}"
+            logger.warning(reason)
+            result["api_available"] = False
+            result["reason"] = reason
+
+        return result
+
+
 
 
 if __name__ == "__main__":
     try:
-        logger.info("Starting ElevenLabs TTS service...")
-        
-        api_key = "your_api"
-        manager = ElevenLabsManager(api_key=api_key)
-        
-        logger.info("Configuring voice settings...")
-        manager.set_model("eleven_turbo_v2_5")
-        manager.set_stability(0.5)
-        manager.set_similarity_boost(0.8)
-        
-        voices = manager.get_voices("cloned")
-        print(voices)
+        api_key = "-"
+        manager = ElevenLabsManager(api_key=api_key,base_url="https://api.elevenlabs.io")
 
-        logger.info("Starting voice cloning process...")
-        new_voice_id = manager.clone_voice(
-            name="TestVoice",
-            files=["sample_0.mp3"],
-            description="Test voice description"
-        )
-        logger.info(f"Voice cloning completed. ID: {new_voice_id}")
+        # Общая проверка API
+        health = manager.check_api_health()
+        print("API Health:", health)
+        # Пример вывода:
+        # {
+        #   'api_available': True,
+        #   'reason': 'All good. You can generate audio.',
+        #   'subscription': {
+        #       'total_symbols': 1000000,
+        #       'used_symbols': 12345,
+        #       'remain_symbols': 987655,
+        #       'can_generate': True
+        #   }
+        # }
 
-        logger.info("Generating test audio...")
-        audio_data = manager.generate_audio(
-            text="This is a test of the cloned voice.",
-            voice=new_voice_id
-        )
-
-        logger.info("Saving generated audio...")
-        manager.save_audio(audio_data, "test_output.mp3")
-        logger.info("Process completed successfully")
-        
-        logger.info("Deleting custom voice")
-        manager.delete_voice(new_voice_id)
-        logger.info("Custom voice deleted successfully")
-
-
+        # Если всё хорошо, можно генерировать
+        if health["api_available"] and health["subscription"]["can_generate"]:
+            audio_data = manager.generate_audio("Hello from new method checking!")
+            manager.save_audio(audio_data, "hello_new_methods.mp3")
 
     except Exception as e:
         logger.error(f"Application error: {str(e)}")
-        raise
